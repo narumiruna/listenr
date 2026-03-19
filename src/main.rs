@@ -56,7 +56,7 @@ fn run() -> Result<(), String> {
 }
 
 fn collect_listen_entries() -> Result<Vec<ListenEntry>, String> {
-    let output = run_command("lsof", &["-i", "-P", "-n"])?;
+    let output = run_command("lsof", &["+c", "0", "-i", "-P", "-n"])?;
     if !output.success {
         let stderr = output.stderr.trim();
         return Err(if stderr.is_empty() {
@@ -136,7 +136,7 @@ fn parse_lsof_line(line: &str) -> Option<ListenEntry> {
         return None;
     }
 
-    let process = fields[0].to_string();
+    let process = decode_lsof_command(fields[0]);
     let pid = fields[1].parse::<u32>().ok()?;
     let proto_idx = fields
         .iter()
@@ -161,6 +161,33 @@ fn parse_host_and_port(addr: &str) -> Option<(String, u16)> {
         .trim_end_matches(']')
         .to_string();
     Some((host, port))
+}
+
+fn decode_lsof_command(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut out = String::with_capacity(raw.len());
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        if bytes[i] == b'\\'
+            && i + 3 < bytes.len()
+            && bytes[i + 1] == b'x'
+            && bytes[i + 2].is_ascii_hexdigit()
+            && bytes[i + 3].is_ascii_hexdigit()
+        {
+            let hex = &raw[i + 2..i + 4];
+            if let Ok(value) = u8::from_str_radix(hex, 16) {
+                out.push(value as char);
+                i += 4;
+                continue;
+            }
+        }
+
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+
+    out
 }
 
 fn parse_docker_ps_line(line: &str) -> Vec<DockerPortBinding> {
@@ -332,6 +359,12 @@ mod tests {
         let entry = parse_lsof_line(line).expect("must parse");
         assert_eq!(entry.host, "::1");
         assert_eq!(entry.port, 6379);
+    }
+
+    #[test]
+    fn decode_lsof_command_unescapes_hex_bytes() {
+        let decoded = decode_lsof_command("OrbStack\\x20Helper");
+        assert_eq!(decoded, "OrbStack Helper");
     }
 
     #[test]
