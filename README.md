@@ -4,6 +4,14 @@
 
 ## Install
 
+From crates.io:
+
+```bash
+cargo install listenr
+```
+
+From local source (development):
+
 ```bash
 cargo install --path .
 ```
@@ -16,7 +24,7 @@ listenr
 
 The tool:
 
-- collects listeners from `lsof -i -P -n` and keeps only `(LISTEN)` rows
+- collects listeners from `lsof +c 0 -i -P -n` and keeps only `(LISTEN)` rows
 - enriches matching host ports from `docker ps --format '{{.ID}}\t{{.Names}}\t{{.Ports}}'`
 - prints a table with `PORT`, `PROTO`, `HOST`, `PROCESS`, and `DOCKER`
 
