@@ -2,5 +2,13 @@
 name = "listenr"
 version = "0.1.0"
 edition = "2024"
+description = "Show listening ports and map Docker published ports to container services"
+license = "MIT"
+repository = "https://github.com/narumiruna/listenr"
+homepage = "https://github.com/narumiruna/listenr"
+documentation = "https://docs.rs/listenr"
+readme = "README.md"
+keywords = ["cli", "network", "docker", "port"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
