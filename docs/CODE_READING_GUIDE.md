@@ -1,89 +1,85 @@
 # listenr Code Reading Guide
 
-This guide explains how `listenr` works end-to-end and where to modify behavior safely.
+This guide explains the CLI pipeline and where to modify it safely.
 
-## 1. Start From the Entry Path
+## 1. Runtime flow
 
-Read the call flow in this order:
+Read the entry path in this order:
 
-1. `main()`
-2. `run()`
-3. `collect_listen_entries()`
-4. `collect_docker_bindings()`
-5. `build_docker_lookup()`
-6. `print_rows()`
+1. `main()` parses arguments and handles help, version, and argument errors without scanning.
+2. `run()` collects a complete in-memory snapshot, selects an output mode, and writes stdout once.
+3. `collect_snapshot()` coordinates required listener collection, optional port filtering, and Docker enrichment.
+4. `collect_listen_entries_with()` and `collect_docker_bindings_with()` execute and parse their data sources.
+5. `build_docker_lookup()` joins published host ports to normalized container records.
+6. `src/render.rs` renders responsive terminal text, versioned JSON, or the compatibility table.
 
-This sequence is the entire runtime pipeline.
+Stdout remains empty until collection and rendering finish. Warnings use stderr. A required `lsof` failure is fatal; Docker failure produces a degraded snapshot.
 
-## 2. Runtime Pipeline (Data Flow)
+## 2. Source organization
 
-`listenr` is a single-file pipeline:
+- `src/main.rs`: CLI parsing, command execution, parser/join logic, source-state modeling, filtering, and orchestration.
+- `src/render.rs`: responsive, JSON, and exact legacy rendering.
+- `tests/cli.rs`: Unix CLI integration tests with isolated fake `lsof` and Docker commands.
 
-1. Run `lsof +c 0 -i -P -n` and keep rows that contain `(LISTEN)`.
-2. Parse each row into `ListenEntry`.
-3. Run `docker ps --format '{{.ID}}\t{{.Names}}\t{{.Ports}}'`.
-4. Parse Docker mappings into `DockerPortBinding`.
-5. Build a lookup keyed by `(host_port, proto)` to get Docker service info.
-6. Join listener rows with Docker info and print a fixed-width table.
+The renderer is separate because responsive wrapping, explicit state presentation, JSON, and compatibility output form a distinct responsibility. Core collection remains in the entrypoint.
 
-If Docker is unavailable, the tool prints a warning to stderr and still shows listener rows.
+## 3. Core data structures
 
-## 3. Core Data Structures
+- `CliOptions`: optional port filter, Docker policy, detail level, and output format.
+- `ListenEntry`: normalized process, PID, protocol, bind address, and host port.
+- `DockerPortBinding`: one parsed published host-to-container mapping.
+- `DockerServicePort`: normalized container record used for joining and display.
+- `DockerEnrichment`: available (possibly partial), skipped, or unavailable Docker state.
+- `Snapshot`: filtered listeners, listener completeness, and Docker enrichment state.
+- `CommandOutput`: captured stdout, stderr, and success from an external command.
 
-- `ListenEntry`:
-  Parsed listener record from `lsof` (`process`, `pid`, `proto`, `host`, `port`).
-- `DockerPortBinding`:
-  One parsed host->container port mapping from Docker output.
-- `DockerServicePort`:
-  Normalized service row used in the lookup map and display.
-- `CommandOutput`:
-  Minimal wrapper around external command execution (`stdout`, `stderr`, `success`).
+## 4. Parsing and collection
 
-## 4. Parsing Responsibilities
+- `parse_cli()`: validates all supported arguments. Unknown options and invalid ports are errors.
+- `parse_lsof_line()`: converts one TCP `(LISTEN)` row into a `ListenEntry`.
+- `parse_host_and_port()`: handles ordinary and bracketed IPv6 addresses.
+- `decode_lsof_command()`: decodes escaped command bytes such as `OrbStack\x20Helper`.
+- `parse_docker_ps_line_detailed()`: returns valid published-port bindings and a failure count while accepting internal-only exposed ports.
 
-- `parse_lsof_line()`:
-  Converts one `lsof` line into `ListenEntry`.
-- `parse_host_and_port()`:
-  Splits host/port and handles IPv6 bracket form.
-- `decode_lsof_command()`:
-  Decodes escaped command names such as `OrbStack\x20Helper`.
-- `parse_docker_ps_line()`:
-  Parses Docker `Ports` field and ignores entries that are not host-published (for example `6379/tcp` only).
+Candidate rows that cannot be parsed increment a partial-state count rather than disappearing silently. Keep the distinction between a valid empty result, partial data, and command failure.
 
-If output format changes, these parser functions are the first place to inspect.
+## 5. Rendering contracts
 
-## 5. Join and Rendering
+`src/render.rs` owns three formats:
 
-- `build_docker_lookup()`:
-  Groups Docker bindings by `(host_port, proto)` and deduplicates with `BTreeSet`.
-- `format_docker_services()`:
-  Converts matched services to human-readable text.
-- `print_rows()` + `print_row()`:
-  Computes column widths and prints aligned output.
+- `auto()`: status summary plus a table that switches to wrapped stacked records when the computed display width does not fit. It uses Unicode display width and never truncates values.
+- `json()`: schema version 1 with explicit source and per-listener mapping states.
+- `legacy()`: the original dynamically padded five-column output, including its exact labels, casing, details, and fallback `-`.
 
-Display behavior is intentionally simple and deterministic (sorted entries, stable output).
+Default `auto` selects responsive output only for a terminal. Redirected stdout selects `legacy()` to preserve existing shell workflows. `--format legacy` always forces that contract.
 
-## 6. Where to Change Specific Behavior
+When changing output, preserve these meanings:
 
-- Add/modify data source commands:
-  `collect_listen_entries()` and `collect_docker_bindings()`.
-- Change parser rules:
-  `parse_lsof_line()` / `parse_docker_ps_line()`.
-- Change matching strategy:
-  `build_docker_lookup()` and lookup key usage in `print_rows()`.
-- Change output format:
-  `print_rows()`, `print_row()`, `format_docker_services()`.
+- `None`: reliable lookup, no mapping.
+- `Unknown`: unavailable or partial lookup cannot establish absence.
+- `Not checked`: lookup intentionally skipped.
 
-## 7. Tests You Should Read First
+## 6. Where to change behavior
 
-The tests in `src/main.rs` document expected parser behavior:
+- Add or modify CLI options: `CliOptions`, `parse_cli()`, `HELP`, and parsing tests in `src/main.rs`.
+- Change external commands: `collect_listen_entries_with()` or `collect_docker_bindings_with()`.
+- Change parser rules: `parse_lsof_line()` or `parse_docker_ps_line_detailed()`; add a focused regression test first.
+- Change matching: `build_docker_lookup()` and the lookup key used by `src/render.rs`.
+- Change presentation: `src/render.rs`; retain a golden legacy compatibility test.
+- Change process-level behavior: `tests/cli.rs` for help, exits, cancellation, stdout/stderr separation, and fake command execution.
 
-- `parse_lsof_ipv4_wildcard`
-- `parse_lsof_ipv6_loopback`
-- `decode_lsof_command_unescapes_hex_bytes`
-- `parse_docker_ports_with_ipv4_and_ipv6_mappings`
-- `parse_docker_ports_ignores_internal_only_expose`
-- `docker_lookup_deduplicates_dual_stack_bindings`
-- `format_docker_outputs_fallback_for_missing_service`
+## 7. Validation
 
-When changing parsing/join logic, update these tests first, then implement.
+Run the same quality gates as CI:
+
+```bash
+cargo fmt --all --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets --all-features
+```
+
+Also build the release binary when command behavior changes:
+
+```bash
+cargo build --release
+```
