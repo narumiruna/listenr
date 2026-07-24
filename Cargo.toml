@@ -12,3 +12,6 @@ keywords = ["cli", "network", "docker", "port"]
 categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
+serde_json = "1"
+terminal_size = "0.4"
+unicode-width = "0.2"
