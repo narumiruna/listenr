@@ -1,0 +1,99 @@
+name: Bump version
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump_type:
+        description: Version part to bump
+        required: true
+        default: patch
+        type: choice
+        options:
+          - major
+          - minor
+          - patch
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bump-version
+  cancel-in-progress: false
+
+jobs:
+  bump-version:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Calculate and apply version bump
+        id: bump
+        env:
+          BUMP_TYPE: ${{ inputs.bump_type }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          current_version=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.workspace_root as $root | .packages[] | select(.manifest_path == ($root + "/Cargo.toml")) | .version')
+
+          if [[ ! "$current_version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)([-+][0-9A-Za-z.+-]+)?$ ]]; then
+            echo "Unsupported package version: $current_version" >&2
+            exit 1
+          fi
+
+          major=${BASH_REMATCH[1]}
+          minor=${BASH_REMATCH[2]}
+          patch=${BASH_REMATCH[3]}
+
+          case "$BUMP_TYPE" in
+            major) new_version="$((major + 1)).0.0" ;;
+            minor) new_version="$major.$((minor + 1)).0" ;;
+            patch) new_version="$major.$minor.$((patch + 1))" ;;
+            *)
+              echo "Unsupported bump type: $BUMP_TYPE" >&2
+              exit 1
+              ;;
+          esac
+
+          if git rev-parse --quiet --verify "refs/tags/v$new_version" >/dev/null; then
+            echo "Tag v$new_version already exists" >&2
+            exit 1
+          fi
+
+          sed -i -E \
+            "0,/^version = \"[^\"]+\"$/s//version = \"$new_version\"/" \
+            Cargo.toml
+          cargo update -p listenr --precise "$new_version"
+
+          echo "version=$new_version" >> "$GITHUB_OUTPUT"
+          echo "Bumped listenr from $current_version to $new_version"
+
+      - name: Verify package
+        run: cargo check --locked
+
+      - name: Commit, tag, and push
+        env:
+          NEW_VERSION: ${{ steps.bump.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -- Cargo.toml Cargo.lock
+          git diff --cached --check
+          git commit -m "chore: bump version to $NEW_VERSION"
+          git tag -a "v$NEW_VERSION" -m "v$NEW_VERSION"
+          git push --atomic origin HEAD:main "v$NEW_VERSION"
